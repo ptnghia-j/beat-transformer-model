@@ -758,6 +758,8 @@ def run_beat_tracking(demixed_spec_file, audio_file, param_path, device="cuda:0"
             if missing_beats_count > 0:
                 for i in range(missing_beats_count):
                     estimated_time = first_beat_time - (missing_beats_count - i) * avg_beat_interval
+                    # Clip negative times to 0 to prevent negative timestamps
+                    estimated_time = max(0.0, estimated_time)
                     padded_beats.append(estimated_time)
 
                 print(f"  - Adding {missing_beats_count} padded beats before first detected beat")
