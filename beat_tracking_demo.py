@@ -230,6 +230,19 @@ def run_beat_tracking(demixed_spec_file, audio_file, param_path, device="cuda:0"
                     if len(model_input.shape) == 3:  # (instr, time, mel_bins)
                         model_input = model_input.unsqueeze(0)  # Add batch dimension
 
+                    # FIXED: Add context padding for chunked processing too
+                    # The model needs ~30 frames of context due to dilated attention (attn_len=5, 9 layers)
+                    batch, instr, time, mel_bins = model_input.shape
+                    context_frames = 32  # Same as full processing
+
+                    # For the first chunk, add padding at the beginning
+                    if start_frame == 0:
+                        padding = torch.zeros((batch, instr, context_frames, mel_bins), dtype=model_input.dtype)
+                        model_input = torch.cat([padding, model_input], dim=2)
+                        chunk_has_padding = True
+                    else:
+                        chunk_has_padding = False
+
                     # Ensure the model input has the correct shape
                     # print(f"Model input shape: {model_input.shape}")
 
@@ -267,6 +280,11 @@ def run_beat_tracking(demixed_spec_file, audio_file, param_path, device="cuda:0"
                 # Get activations
                 beat_act_chunk = torch.sigmoid(activation[0, :, 0]).detach().cpu().numpy()
                 downbeat_act_chunk = torch.sigmoid(activation[0, :, 1]).detach().cpu().numpy()
+
+                # Remove padding from first chunk if it was added
+                if start_frame == 0 and chunk_has_padding:
+                    beat_act_chunk = beat_act_chunk[context_frames:]
+                    downbeat_act_chunk = downbeat_act_chunk[context_frames:]
 
                 # Store chunk activations and positions
                 beat_activation_chunks.append(beat_act_chunk)
