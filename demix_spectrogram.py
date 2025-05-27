@@ -81,20 +81,29 @@ def demix_with_spleeter(audio_file, output_file, sr=44100, n_fft=4096, n_mels=12
         spectrograms = []
         for key in demixed:
             print(f"Processing stem: {key}")
-            # Compute spectral energy using Spleeter's STFT function
-            stft = separator._stft(demixed[key])
-            print(f"STFT shape for {key}: {stft.shape}")
 
-            # Fix: Average over the final channel dimension to align shapes before dot
-            stft_power = np.mean(np.abs(stft)**2, axis=-1)
-            print(f"STFT power shape: {stft_power.shape}")
+            # FIXED: Use librosa with exact Beat-Transformer parameters instead of Spleeter's STFT
+            # Beat-Transformer was trained with hop_length=1024 (44100/1024 = 43.07 fps)
+            # This ensures consistent timing with the model's expectations
+            stem_audio = demixed[key]
+            if len(stem_audio.shape) > 1:
+                # Convert to mono if stereo
+                stem_audio = np.mean(stem_audio, axis=1)
 
-            # Apply mel filterbank
-            spec = np.dot(stft_power, mel_f)
-            print(f"Mel spec shape: {spec.shape}")
+            # Use librosa mel spectrogram with Beat-Transformer parameters
+            mel_spec = librosa.feature.melspectrogram(
+                y=stem_audio,
+                sr=sr,
+                n_fft=n_fft,
+                hop_length=1024,  # CRITICAL: Match Beat-Transformer training (44100/1024 fps)
+                n_mels=n_mels,
+                fmin=fmin,
+                fmax=fmax
+            )
+            print(f"Mel spec shape for {key}: {mel_spec.shape}")
 
             # Convert to dB scale
-            spec_db = librosa.power_to_db(spec, ref=np.max)
+            spec_db = librosa.power_to_db(mel_spec, ref=np.max)
             print(f"Final spec shape for {key}: {spec_db.shape}")
 
             # Ensure the spectrogram has the correct shape (time, frequency)
@@ -135,9 +144,9 @@ def simple_spectrogram(audio_file, output_file, sr=44100, n_fft=4096, n_mels=128
         # Load audio with librosa
         y, sr = librosa.load(audio_file, sr=sr)
 
-        # Create mel spectrogram
+        # Create mel spectrogram with Beat-Transformer parameters
         mel_spec = librosa.feature.melspectrogram(
-            y=y, sr=sr, n_fft=n_fft, n_mels=n_mels, fmin=fmin, fmax=fmax
+            y=y, sr=sr, n_fft=n_fft, hop_length=1024, n_mels=n_mels, fmin=fmin, fmax=fmax
         )
         spec_db = librosa.power_to_db(mel_spec, ref=np.max)
 
