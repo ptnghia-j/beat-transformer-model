@@ -725,22 +725,72 @@ def run_beat_tracking(demixed_spec_file, audio_file, param_path, device="cuda:0"
                 # else:
                 #     print("\nNo time signature changes detected")
 
+            # TEMPORARY FIX: Apply timing offset compensation
             # Identify pickup beats (beats before the first downbeat)
             pickup_beats = []
             if len(downbeat_times) > 0:
                 first_downbeat = downbeat_times[0]
                 pickup_beats = [b for b in dbn_beat_pred if b < first_downbeat]
 
-            # For each beat, determine its position within its measure
-            for i, beat_time in enumerate(dbn_beat_pred):
-                # Handle pickup beats with our strategy
-                if beat_time in pickup_beats:
-                    # Pickup beats get the final beat numbers of the time signature
-                    # For 3/4 time with 1 pickup: beat gets number 3
-                    # For 4/4 time with 2 pickups: beats get numbers 3, 4
-                    pickup_index = pickup_beats.index(beat_time)
-                    pickup_count = len(pickup_beats)
-                    beat_num = common_length - pickup_count + pickup_index + 1
+            # Calculate timing offset and missing beats
+            first_beat_time = dbn_beat_pred[0] if len(dbn_beat_pred) > 0 else 0
+            timing_offset = first_beat_time  # e.g., 0.65s
+
+            # Estimate tempo from the first few beats
+            if len(dbn_beat_pred) >= 3:
+                intervals = np.diff(dbn_beat_pred[:5])  # Use first 5 beats for tempo
+                avg_beat_interval = np.median(intervals)  # More robust than mean
+            else:
+                avg_beat_interval = 0.32  # Default fallback
+
+            # Calculate how many beats were cut off initially
+            missing_beats_count = int(round(timing_offset / avg_beat_interval))
+
+            print(f"DEBUG - Timing compensation:")
+            print(f"  - First beat at: {first_beat_time:.3f}s")
+            print(f"  - Average beat interval: {avg_beat_interval:.3f}s")
+            print(f"  - Estimated missing beats: {missing_beats_count}")
+            print(f"  - Detected pickup beats: {len(pickup_beats)}")
+            print(f"  - Time signature: {common_length}/4")
+
+            # Add missing beats at the beginning (padded beats)
+            padded_beats = []
+            if missing_beats_count > 0:
+                for i in range(missing_beats_count):
+                    estimated_time = first_beat_time - (missing_beats_count - i) * avg_beat_interval
+                    padded_beats.append(estimated_time)
+
+                print(f"  - Adding {missing_beats_count} padded beats before first detected beat")
+                print(f"  - Padded beat times: {[f'{t:.3f}s' for t in padded_beats]}")
+
+            # Combine padded beats with detected beats for processing
+            all_beats = padded_beats + list(dbn_beat_pred)
+            all_beat_sources = ['padded'] * len(padded_beats) + ['detected'] * len(dbn_beat_pred)
+
+            # Recalculate pickup beats including padded ones
+            if len(downbeat_times) > 0:
+                first_downbeat = downbeat_times[0]
+                all_pickup_beats = [b for b in all_beats if b < first_downbeat]
+                all_pickup_sources = [all_beat_sources[i] for i, b in enumerate(all_beats) if b < first_downbeat]
+            else:
+                all_pickup_beats = []
+                all_pickup_sources = []
+
+            print(f"  - Total pickup beats (including padded): {len(all_pickup_beats)}")
+
+            # For each beat (including padded), determine its position within its measure
+            for i, beat_time in enumerate(all_beats):
+                beat_source = all_beat_sources[i]
+                # Handle pickup beats (including padded ones) with our strategy
+                if beat_time in all_pickup_beats:
+                    # Calculate beat number for pickup beats
+                    pickup_index = all_pickup_beats.index(beat_time)
+                    total_pickup_count = len(all_pickup_beats)
+                    beat_num = common_length - total_pickup_count + pickup_index + 1
+
+                    # Ensure beat number is valid (wrap around if necessary)
+                    if beat_num <= 0:
+                        beat_num = common_length + beat_num
                 else:
                     # Find which measure this beat belongs to
                     measure_idx = 0
@@ -788,7 +838,8 @@ def run_beat_tracking(demixed_spec_file, audio_file, param_path, device="cuda:0"
 
                 beats_with_positions.append({
                     "time": round(beat_time, 2),
-                    "beatNum": int(beat_num)
+                    "beatNum": int(beat_num),
+                    "source": beat_source  # Track whether this is 'padded' or 'detected'
                 })
         else:
             # Simple fallback beat numbering (just modulo 4 for standard 4/4 time)
@@ -801,12 +852,21 @@ def run_beat_tracking(demixed_spec_file, audio_file, param_path, device="cuda:0"
         # Save beats as plain text file
         with open('beats_with_positions.txt', 'w') as f:
             for beat in beats_with_positions:
-                f.write(f"time: {beat['time']:.2f} \t beatNum: {beat['beatNum']}\n")
+                source_marker = " (PADDED)" if beat.get('source') == 'padded' else ""
+                f.write(f"time: {beat['time']:.2f} \t beatNum: {beat['beatNum']}{source_marker}\n")
 
-        print("\nFirst 20 beats with modular positions:")
+        print("\nFirst 20 beats with modular positions (including timing compensation):")
         for beat in beats_with_positions[:20]:
-            print(f"time: {beat['time']:.2f} \t beatNum: {beat['beatNum']}")
+            source_marker = " (PADDED)" if beat.get('source') == 'padded' else ""
+            print(f"time: {beat['time']:.2f} \t beatNum: {beat['beatNum']}{source_marker}")
+
+        # Count padded vs detected beats
+        padded_count = sum(1 for beat in beats_with_positions if beat.get('source') == 'padded')
+        detected_count = len(beats_with_positions) - padded_count
+
         print(f"Saved {len(beats_with_positions)} beats to beats_with_positions.txt")
+        print(f"  - {padded_count} padded beats (timing compensation)")
+        print(f"  - {detected_count} detected beats (from model)")
 
         print(f"\nDetected {len(dbn_beat_pred)} beats")
         print(f"Detected {len(dbn_downbeat_pred)} downbeats")
